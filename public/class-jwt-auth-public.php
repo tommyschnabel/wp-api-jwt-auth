@@ -122,8 +122,6 @@ class Jwt_Auth_Public {
 	 */
 	public function generate_token( WP_REST_Request $request ) {
 		$secret_key = defined( 'JWT_AUTH_SECRET_KEY' ) ? JWT_AUTH_SECRET_KEY : false;
-		$username   = $request->get_param( 'username' );
-		$password   = $request->get_param( 'password' );
 
 		/** First thing, check the secret key if not exist return an error*/
 		if ( ! $secret_key ) {
@@ -135,16 +133,15 @@ class Jwt_Auth_Public {
 				]
 			);
 		}
-		/** Try to authenticate the user with the passed credentials*/
-		$user = wp_authenticate( $username, $password );
 
-		/** If the authentication fails return an error*/
-		if ( is_wp_error( $user ) ) {
-			$error_code = $user->get_error_code();
+		/** Get user */
+		$user_id = apply_filters('determine_current_user', false);
+	
+		/** If the user isn't valid return an error*/
+		if ( $user_id == false ) {
 
 			return new WP_Error(
-				'[jwt_auth] ' . $error_code,
-				$user->get_error_message( $error_code ),
+				"Must be logged in to use this endpoint",
 				[
 					'status' => 403,
 				]
@@ -163,7 +160,7 @@ class Jwt_Auth_Public {
 			'exp'  => $expire,
 			'data' => [
 				'user' => [
-					'id' => $user->data->ID,
+					'id' => $user_id,
 				],
 			],
 		];
@@ -183,94 +180,18 @@ class Jwt_Auth_Public {
 		}
 
 		$token = JWT::encode(
-			apply_filters( 'jwt_auth_token_before_sign', $token, $user ),
+			apply_filters( 'jwt_auth_token_before_sign', $token, $user_id ),
 			$secret_key,
 			$algorithm
 		);
 
 		/** The token is signed, now create the object with no sensible user data to the client*/
 		$data = [
-			'token'             => $token,
-			'user_email'        => $user->data->user_email,
-			'user_nicename'     => $user->data->user_nicename,
-			'user_display_name' => $user->data->display_name,
+			'token'             => $token
 		];
 
 		/** Let the user modify the data before send it back */
-		return apply_filters( 'jwt_auth_token_before_dispatch', $data, $user );
-	}
-
-	/**
-	 * This is our Middleware to try to authenticate the user according to the
-	 * token send.
-	 *
-	 * @param (int|bool) $user Logged User ID
-	 *
-	 * @return (int|bool)
-	 */
-	public function determine_current_user( $user ) {
-		/**
-		 * This hook only should run on the REST API requests to determine
-		 * if the user in the Token (if any) is valid, for any other
-		 * normal call ex. wp-admin/.* return the user.
-		 *
-		 * @since 1.2.3
-		 **/
-		$rest_api_slug = rest_get_url_prefix();
-		$requested_url = sanitize_url( $_SERVER['REQUEST_URI'] );
-		// if we already have a valid user, or we have an invalid url, don't attempt to validate token
-		$is_rest_request_constant_defined = defined( 'REST_REQUEST' ) && REST_REQUEST;
-		$is_rest_request                  = $is_rest_request_constant_defined || strpos( $requested_url,
-				$rest_api_slug );
-		if ( $is_rest_request && $user ) {
-			return $user;
-		}
-
-		/*
-		 * if the request URI is for validate the token don't do anything,
-		 * this avoids double calls.
-		 */
-		$validate_uri = strpos( $requested_url, 'token/validate' );
-		if ( $validate_uri > 0 ) {
-			return $user;
-		}
-
-		/**
-		 * We still need to get the Authorization header and check for the token.
-		 */
-		$auth_header = ! empty( $_SERVER['HTTP_AUTHORIZATION'] ) ? sanitize_text_field( $_SERVER['HTTP_AUTHORIZATION'] ) : false;
-		/* Double check for different auth header string (server dependent) */
-		if ( ! $auth_header ) {
-			$auth_header = ! empty( $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ) ? sanitize_text_field( $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ) : false;
-		}
-
-		if ( ! $auth_header ) {
-			return $user;
-		}
-
-		/**
-		 * Check if the auth header is not bearer, if so, return the user
-		 */
-		if ( strpos( $auth_header, 'Bearer' ) !== 0 ) {
-			return $user;
-		}
-
-		/*
-		 * Check the token from the headers.
-		 */
-		$token = $this->validate_token( new WP_REST_Request(), $auth_header );
-
-		if ( is_wp_error( $token ) ) {
-			if ( $token->get_error_code() != 'jwt_auth_no_auth_header' ) {
-				/** If there is an error, store it to show it after see rest_pre_dispatch */
-				$this->jwt_error = $token;
-			}
-
-			return $user;
-		}
-
-		/** Everything is ok, return the user ID stored in the token*/
-		return $token->data->user->id;
+		return apply_filters( 'jwt_auth_token_before_dispatch', $data, $user_id );
 	}
 
 	/**
